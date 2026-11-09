@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { after, before, describe, test } from 'node:test'
+import { migrate, openDb } from '../src/db.js'
 import { startTestServer } from './helpers.js'
 
 describe('patch notes API', () => {
@@ -214,5 +216,111 @@ describe('patch notes API', () => {
       assert.equal(res.body.error.code, 'method_not_allowed')
     }
     assert.equal((await api.request('PATCH', '/notes', { title: 'X' })).status, 405)
+  })
+
+  test('error responses keep the single { code, message } shape', async () => {
+    const note = await createNote()
+    const cases = [
+      [{}, 'empty_patch'],
+      [{ title: '' }, 'invalid_title'],
+      [{ body: 7 }, 'invalid_body'],
+      [{ tags: 'work' }, 'invalid_tags'],
+    ]
+    for (const [input, code] of cases) {
+      const res = await api.request('PATCH', `/notes/${note.id}`, input)
+      assert.equal(res.status, 400)
+      assert.deepEqual(Object.keys(res.body).sort(), ['error'])
+      assert.deepEqual(Object.keys(res.body.error).sort(), ['code', 'message'])
+      assert.equal(res.body.error.code, code)
+      assert.equal(typeof res.body.error.message, 'string')
+      assert.ok(res.body.error.message.length > 0)
+    }
+    const missing = await api.request('PATCH', '/notes/999999', { title: 'X' })
+    assert.equal(missing.status, 404)
+    assert.deepEqual(Object.keys(missing.body.error).sort(), ['code', 'message'])
+  })
+
+  // The design note (§3) makes the read-modify-write safe by keeping the
+  // SELECT and the UPDATE in one synchronous block. These tests pin that:
+  // if an await ever slips between them, concurrent patches interleave and
+  // either a partial update gets lost or a response stops reflecting the row
+  // its own request wrote.
+  test('concurrent full-field patches never tear a row', async () => {
+    const note = await createNote({ tags: [] })
+    const markers = Array.from({ length: 20 }, (_, i) => `m${i}`)
+    const responses = await Promise.all(
+      markers.map((marker) => api.request('PATCH', `/notes/${note.id}`, { title: marker, body: marker, tags: [marker] }))
+    )
+    for (const [i, res] of responses.entries()) {
+      assert.equal(res.status, 200)
+      // Each response shows the row its own request wrote, all three fields together.
+      assert.equal(res.body.title, markers[i])
+      assert.equal(res.body.body, markers[i])
+      assert.deepEqual(res.body.tags, [markers[i]])
+      assert.equal(res.body.created_at, note.created_at)
+    }
+    const final = await api.request('GET', `/notes/${note.id}`)
+    assert.ok(markers.includes(final.body.title))
+    assert.equal(final.body.body, final.body.title)
+    assert.deepEqual(final.body.tags, [final.body.title])
+  })
+
+  test('concurrent partial patches compose without losing a field', async () => {
+    const note = await createNote()
+    for (let round = 1; round <= 15; round++) {
+      const results = await Promise.all([
+        api.request('PATCH', `/notes/${note.id}`, { title: `t${round}` }),
+        api.request('PATCH', `/notes/${note.id}`, { body: `b${round}` }),
+        api.request('PATCH', `/notes/${note.id}`, { tags: [`g${round}`] }),
+      ])
+      for (const res of results) assert.equal(res.status, 200)
+      const after = await api.request('GET', `/notes/${note.id}`)
+      // Whichever order the three requests ran in, all three changes must stick.
+      assert.deepEqual(after.body, {
+        id: note.id,
+        title: `t${round}`,
+        body: `b${round}`,
+        created_at: note.created_at,
+        tags: [`g${round}`],
+      })
+    }
+  })
+})
+
+describe('patch on an upgraded database', () => {
+  test('notes created before this code existed can be patched', async () => {
+    const db = openDb(':memory:')
+    db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
+    db.exec(readFileSync(new URL('../migrations/001_create_notes.sql', import.meta.url), 'utf8'))
+    db.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').run('001_create_notes.sql', '2026-01-01T00:00:00.000Z')
+    db.prepare('INSERT INTO notes (title, body, created_at) VALUES (?, ?, ?)').run('Legacy note', 'old body', '2026-01-01T00:00:00.000Z')
+
+    assert.deepEqual(migrate(db), ['002_add_tags.sql'])
+
+    const api = await startTestServer(db)
+    try {
+      const legacy = await api.request('GET', '/notes')
+      const id = legacy.body.data[0].id
+
+      const retitled = await api.request('PATCH', `/notes/${id}`, { title: 'Edited title' })
+      assert.equal(retitled.status, 200)
+      assert.deepEqual(retitled.body, {
+        id,
+        title: 'Edited title',
+        body: 'old body',
+        created_at: '2026-01-01T00:00:00.000Z',
+        tags: [],
+      })
+
+      const retagged = await api.request('PATCH', `/notes/${id}`, { tags: ['late-tag'] })
+      assert.equal(retagged.status, 200)
+      assert.deepEqual(retagged.body.tags, ['late-tag'])
+      assert.equal(retagged.body.title, 'Edited title')
+
+      assert.deepEqual((await api.request('GET', `/notes/${id}`)).body, retagged.body)
+      assert.equal((await api.request('GET', '/notes?tag=late-tag')).body.data.length, 1)
+    } finally {
+      await api.close()
+    }
   })
 })

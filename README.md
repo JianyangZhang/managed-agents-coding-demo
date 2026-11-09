@@ -13,6 +13,7 @@ This repository is a public demo: its feature changes are delivered by agents ru
 | GET | `/notes?limit=N` | List notes, newest first (default 50, at most 200) |
 | GET | `/notes?tag=T&limit=N` | List only notes carrying tag `T` (exact, case-sensitive; the value is trimmed like on create, and an empty or whitespace-only value is a `400 invalid_query`); combinable with `limit` |
 | GET | `/notes/:id` | Read a note |
+| PATCH | `/notes/:id` | Edit a note: `{ "title"?, "body"?, "tags"? }` — any subset of the fields, each validated like on create; `tags` replaces the whole list; at least one field must be carried (`400 empty_patch`); a missing note is `404` |
 | DELETE | `/notes/:id` | Delete a note |
 
 ## Development

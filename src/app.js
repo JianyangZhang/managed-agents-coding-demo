@@ -150,8 +150,9 @@ export function createApp(db) {
       return send(res, 204)
     }
     if (req.method === 'PATCH') {
-      // The body must be consumed either way, but a missing note wins over body
-      // errors: resolving the resource beats validating the payload.
+      // A missing note wins over body errors: resolving the resource beats
+      // validating the payload. (A malformed id already 404'd in parseId,
+      // before the body was read.)
       let input
       let bodyError
       try {
