@@ -2,10 +2,14 @@ import { createServer } from 'node:http'
 import { createApp } from '../src/app.js'
 import { migrate, openDb } from '../src/db.js'
 
-/** Starts the API on an ephemeral port over a fresh in-memory database. */
-export async function startTestServer() {
+function freshDb() {
   const db = openDb(':memory:')
   migrate(db)
+  return db
+}
+
+/** Starts the API on an ephemeral port over `db`, or over a fresh in-memory database when omitted. */
+export async function startTestServer(db = freshDb()) {
   const server = createServer(createApp(db))
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${server.address().port}`
