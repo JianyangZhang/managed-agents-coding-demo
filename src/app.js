@@ -53,6 +53,22 @@ function parseLimit(raw) {
   return Number(raw)
 }
 
+/** Validates a title: a string of 1-TITLE_MAX characters after trimming.
+ * A missing or non-string title fails too — on create the title is required. */
+function parseTitle(raw) {
+  const title = typeof raw === 'string' ? raw.trim() : ''
+  if (title.length === 0 || title.length > TITLE_MAX) {
+    throw new HttpError(400, 'invalid_title', `title must be a non-empty string of at most ${TITLE_MAX} characters`)
+  }
+  return title
+}
+
+/** Validates a body: an optional string. */
+function parseBody(raw) {
+  if (raw !== undefined && typeof raw !== 'string') throw new HttpError(400, 'invalid_body', 'body must be a string')
+  return raw ?? ''
+}
+
 /** Validates the tags input: an optional array of strings, each 1-32 chars after
  * trimming, duplicates (case-sensitive) removed keeping first-seen order. */
 function parseTags(raw) {
@@ -94,6 +110,7 @@ export function createApp(db) {
     'SELECT id, title, body, created_at, tags FROM notes WHERE EXISTS (SELECT 1 FROM json_each(notes.tags) AS t WHERE t.value = ?) ORDER BY id DESC LIMIT ?'
   )
   const deleteNote = db.prepare('DELETE FROM notes WHERE id = ?')
+  const updateNote = db.prepare('UPDATE notes SET title = ?, body = ?, tags = ? WHERE id = ?')
 
   async function route(req, res) {
     const url = new URL(req.url, 'http://localhost')
@@ -112,15 +129,10 @@ export function createApp(db) {
       }
       if (req.method === 'POST') {
         const input = await readJson(req)
-        const title = typeof input.title === 'string' ? input.title.trim() : ''
-        if (title.length === 0 || title.length > TITLE_MAX) {
-          throw new HttpError(400, 'invalid_title', `title must be a non-empty string of at most ${TITLE_MAX} characters`)
-        }
-        if (input.body !== undefined && typeof input.body !== 'string') {
-          throw new HttpError(400, 'invalid_body', 'body must be a string')
-        }
+        const title = parseTitle(input.title)
+        const body = parseBody(input.body)
         const tags = parseTags(input.tags)
-        const result = insertNote.run(title, input.body ?? '', JSON.stringify(tags), new Date().toISOString())
+        const result = insertNote.run(title, body, JSON.stringify(tags), new Date().toISOString())
         return send(res, 201, toNote(selectNote.get(result.lastInsertRowid)))
       }
       throw new HttpError(405, 'method_not_allowed', 'method not allowed')
@@ -136,6 +148,32 @@ export function createApp(db) {
       const result = deleteNote.run(id)
       if (result.changes === 0) throw new HttpError(404, 'not_found', 'note not found')
       return send(res, 204)
+    }
+    if (req.method === 'PATCH') {
+      // The body must be consumed either way, but a missing note wins over body
+      // errors: resolving the resource beats validating the payload.
+      let input
+      let bodyError
+      try {
+        input = await readJson(req)
+      } catch (error) {
+        bodyError = error
+      }
+      const row = selectNote.get(id)
+      if (!row) throw new HttpError(404, 'not_found', 'note not found')
+      if (bodyError) throw bodyError
+
+      const hasTitle = input.title !== undefined
+      const hasBody = input.body !== undefined
+      const hasTags = input.tags !== undefined
+      if (!hasTitle && !hasBody && !hasTags) {
+        throw new HttpError(400, 'empty_patch', 'at least one of title, body, tags must be provided')
+      }
+      const title = hasTitle ? parseTitle(input.title) : row.title
+      const body = hasBody ? parseBody(input.body) : row.body
+      const tags = hasTags ? parseTags(input.tags) : JSON.parse(row.tags)
+      updateNote.run(title, body, JSON.stringify(tags), id)
+      return send(res, 200, toNote(selectNote.get(id)))
     }
     throw new HttpError(405, 'method_not_allowed', 'method not allowed')
   }
