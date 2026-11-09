@@ -22,5 +22,11 @@ export async function startTestServer(db = freshDb()) {
     const text = await res.text()
     return { status: res.status, body: text.length === 0 ? null : JSON.parse(text) }
   }
-  return { db, request, close: () => new Promise((resolve) => server.close(resolve)) }
+  /** Like request, but sends `raw` as the body verbatim (for malformed payloads). */
+  async function requestRaw(method, path, raw) {
+    const res = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: raw })
+    const text = await res.text()
+    return { status: res.status, body: text.length === 0 ? null : JSON.parse(text) }
+  }
+  return { db, request, requestRaw, close: () => new Promise((resolve) => server.close(resolve)) }
 }
