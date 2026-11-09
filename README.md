@@ -9,8 +9,9 @@ This repository is a public demo: its feature changes are delivered by agents ru
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Liveness check |
-| POST | `/notes` | Create a note: `{ "title": string, "body"?: string }` |
+| POST | `/notes` | Create a note: `{ "title": string, "body"?: string, "tags"?: string[] }` — at most 10 tags, each 1–32 characters after trimming, duplicates (case-sensitive) removed |
 | GET | `/notes?limit=N` | List notes, newest first (default 50, at most 200) |
+| GET | `/notes?tag=T&limit=N` | List only notes carrying tag `T` (exact, case-sensitive); `limit` optional and combinable |
 | GET | `/notes/:id` | Read a note |
 | DELETE | `/notes/:id` | Delete a note |
 

@@ -1,4 +1,6 @@
 const TITLE_MAX = 200
+const TAG_MAX_LEN = 32
+const TAGS_MAX = 10
 const LIST_LIMIT_DEFAULT = 50
 const LIST_LIMIT_MAX = 200
 
@@ -51,14 +53,46 @@ function parseLimit(raw) {
   return Number(raw)
 }
 
+/** Validates the tags input: an optional array of strings, each 1-32 chars after
+ * trimming, duplicates (case-sensitive) removed keeping first-seen order. */
+function parseTags(raw) {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) throw new HttpError(400, 'invalid_tags', 'tags must be an array of strings')
+  const seen = new Set()
+  const tags = []
+  for (const item of raw) {
+    if (typeof item !== 'string') throw new HttpError(400, 'invalid_tags', 'tags must be an array of strings')
+    const tag = item.trim()
+    if (tag.length === 0 || tag.length > TAG_MAX_LEN) {
+      throw new HttpError(400, 'invalid_tags', `each tag must be between 1 and ${TAG_MAX_LEN} characters after trimming`)
+    }
+    if (seen.has(tag)) continue
+    seen.add(tag)
+    tags.push(tag)
+  }
+  if (tags.length > TAGS_MAX) throw new HttpError(400, 'invalid_tags', `a note can have at most ${TAGS_MAX} tags`)
+  return tags
+}
+
+/** Returns the tag filter for the list endpoint, or null when absent. */
+function parseTagParam(raw) {
+  if (raw === null) return null
+  const tag = raw.trim()
+  if (tag.length === 0) throw new HttpError(400, 'invalid_query', 'tag must be a non-empty string')
+  return tag
+}
+
 function toNote(row) {
-  return { id: row.id, title: row.title, body: row.body, created_at: row.created_at }
+  return { id: row.id, title: row.title, body: row.body, created_at: row.created_at, tags: JSON.parse(row.tags) }
 }
 
 export function createApp(db) {
-  const insertNote = db.prepare('INSERT INTO notes (title, body, created_at) VALUES (?, ?, ?)')
-  const selectNote = db.prepare('SELECT id, title, body, created_at FROM notes WHERE id = ?')
-  const listNotes = db.prepare('SELECT id, title, body, created_at FROM notes ORDER BY id DESC LIMIT ?')
+  const insertNote = db.prepare('INSERT INTO notes (title, body, tags, created_at) VALUES (?, ?, ?, ?)')
+  const selectNote = db.prepare('SELECT id, title, body, created_at, tags FROM notes WHERE id = ?')
+  const listNotes = db.prepare('SELECT id, title, body, created_at, tags FROM notes ORDER BY id DESC LIMIT ?')
+  const listNotesByTag = db.prepare(
+    'SELECT id, title, body, created_at, tags FROM notes WHERE EXISTS (SELECT 1 FROM json_each(notes.tags) AS t WHERE t.value = ?) ORDER BY id DESC LIMIT ?'
+  )
   const deleteNote = db.prepare('DELETE FROM notes WHERE id = ?')
 
   async function route(req, res) {
@@ -72,7 +106,9 @@ export function createApp(db) {
     if (parts.length === 1) {
       if (req.method === 'GET') {
         const limit = parseLimit(url.searchParams.get('limit'))
-        return send(res, 200, { data: listNotes.all(limit).map(toNote) })
+        const tag = parseTagParam(url.searchParams.get('tag'))
+        const rows = tag === null ? listNotes.all(limit) : listNotesByTag.all(tag, limit)
+        return send(res, 200, { data: rows.map(toNote) })
       }
       if (req.method === 'POST') {
         const input = await readJson(req)
@@ -83,7 +119,8 @@ export function createApp(db) {
         if (input.body !== undefined && typeof input.body !== 'string') {
           throw new HttpError(400, 'invalid_body', 'body must be a string')
         }
-        const result = insertNote.run(title, input.body ?? '', new Date().toISOString())
+        const tags = parseTags(input.tags)
+        const result = insertNote.run(title, input.body ?? '', JSON.stringify(tags), new Date().toISOString())
         return send(res, 201, toNote(selectNote.get(result.lastInsertRowid)))
       }
       throw new HttpError(405, 'method_not_allowed', 'method not allowed')
