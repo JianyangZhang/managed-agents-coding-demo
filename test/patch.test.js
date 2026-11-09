@@ -235,16 +235,31 @@ describe('patch notes API', () => {
       assert.equal(typeof res.body.error.message, 'string')
       assert.ok(res.body.error.message.length > 0)
     }
+    for (const raw of ['not json', '']) {
+      const res = await api.requestRaw('PATCH', `/notes/${note.id}`, raw)
+      assert.equal(res.status, 400)
+      assert.equal(res.body.error.code, 'invalid_body')
+      assert.deepEqual(Object.keys(res.body.error).sort(), ['code', 'message'])
+      assert.ok(res.body.error.message.length > 0)
+    }
+    const rejected = await api.request('PUT', `/notes/${note.id}`, { title: 'X' })
+    assert.equal(rejected.status, 405)
+    assert.deepEqual(Object.keys(rejected.body.error).sort(), ['code', 'message'])
+    assert.ok(rejected.body.error.message.length > 0)
     const missing = await api.request('PATCH', '/notes/999999', { title: 'X' })
     assert.equal(missing.status, 404)
     assert.deepEqual(Object.keys(missing.body.error).sort(), ['code', 'message'])
   })
 
   // The design note (§3) makes the read-modify-write safe by keeping the
-  // SELECT and the UPDATE in one synchronous block. These tests pin that:
-  // if an await ever slips between them, concurrent patches interleave and
-  // either a partial update gets lost or a response stops reflecting the row
-  // its own request wrote.
+  // SELECT and the UPDATE in one synchronous block. The partial test below is
+  // the load-bearing pin for that: an await between the SELECT and the UPDATE
+  // lets concurrent patches interleave and lose a field update (verified by
+  // mutation). The full-field test pins a different property — every UPDATE
+  // stays one atomic statement, so a row is never torn across requests. Its
+  // per-response assertion (each response shows its own write) is stronger
+  // than the design's literal promise and holds because the UPDATE and the
+  // re-read are adjacent synchronous statements.
   test('concurrent full-field patches never tear a row', async () => {
     const note = await createNote({ tags: [] })
     const markers = Array.from({ length: 20 }, (_, i) => `m${i}`)
