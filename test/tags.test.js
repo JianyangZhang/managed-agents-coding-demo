@@ -102,6 +102,11 @@ describe('tags API', () => {
     const none = await api.request('GET', '/notes?tag=no-such-tag')
     assert.equal(none.status, 200)
     assert.deepEqual(none.body.data, [])
+
+    // No stored tag can exceed 32 characters, so an over-long filter simply matches nothing.
+    const overLong = await api.request('GET', `/notes?tag=${'x'.repeat(33)}`)
+    assert.equal(overLong.status, 200)
+    assert.deepEqual(overLong.body.data, [])
   })
 
   test('an empty or whitespace-only tag filter is rejected', async () => {
@@ -110,6 +115,19 @@ describe('tags API', () => {
       assert.equal(res.status, 400)
       assert.equal(res.body.error.code, 'invalid_query')
     }
+  })
+
+  test('with several tag params the first value wins', async () => {
+    const created = await api.request('POST', '/notes', { title: 'Multi', tags: ['multi-first'] })
+    assert.equal(created.status, 201)
+
+    const first = await api.request('GET', '/notes?tag=multi-first&tag=no-such-tag')
+    assert.equal(first.status, 200)
+    assert.deepEqual(first.body.data.map((note) => note.id), [created.body.id])
+
+    const reversed = await api.request('GET', '/notes?tag=no-such-tag&tag=multi-first')
+    assert.equal(reversed.status, 200)
+    assert.deepEqual(reversed.body.data, [])
   })
 
   test('deleting a note drops its tags', async () => {
