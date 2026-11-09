@@ -1,0 +1,15 @@
+{
+  "name": "notes-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A small notes HTTP API used to demonstrate delivering code changes with cloud agents.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "migrate": "node src/migrate-cli.js",
+    "test": "node --test test/*.test.js"
+  }
+}
